@@ -1,12 +1,23 @@
+// ============================================================================
+// src/app/(inspector)/scan/[id]/report/page.tsx
+// SIH PS26034 — Statutory Inspection Report Page
+//
+// Generates (or retrieves) the compliance report for the given inspection,
+// renders it via ReportView, and provides a download action.
+// ============================================================================
+
 import Link from 'next/link';
 import { AppShell } from '@/components/shell/app-shell';
 import { PageContainer } from '@/components/shell/page-container';
 import { Breadcrumbs } from '@/components/shell/breadcrumbs';
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
+import { ReportView } from '@/components/reports/report-view';
 import { Button } from '@/components/ui/button';
-import { StatusBadge } from '@/components/ui/status-badge';
-import { Download, ArrowLeft, ShieldCheck, FileCheck, Printer } from 'lucide-react';
+import { Download, ArrowLeft, Printer } from 'lucide-react';
 import { requireInspector } from '@/lib/auth/helpers';
+import { createServerSupabaseClient } from '@/lib/supabase/server';
+import { generateReportPayload } from '@/lib/reports/generator';
+import type { Inspection } from '@/types/database.types';
+import type { ReportPayload } from '@/lib/reports/types';
 
 export default async function ReportViewPage({
   params,
@@ -15,6 +26,42 @@ export default async function ReportViewPage({
 }) {
   const profile = await requireInspector({ redirectTo: '/login' });
   const { id } = await params;
+
+  const supabase = await createServerSupabaseClient();
+
+  let reportPayload: ReportPayload | null = null;
+  let errorMessage: string | null = null;
+
+  try {
+    // Verify IDOR: Inspector must own this inspection
+    const { data: inspection } = await (
+      supabase.from('inspections') as unknown as {
+        select: (cols: string) => {
+          eq: (col: string, val: string) => {
+            single: () => Promise<{ data: Pick<Inspection, 'id' | 'inspector_id'> | null }>;
+          };
+        };
+      }
+    )
+      .select('id, inspector_id')
+      .eq('id', id)
+      .single();
+
+    if (!inspection) {
+      errorMessage = 'Inspection not found.';
+    } else if (inspection.inspector_id !== profile.id && profile.role === 'inspector') {
+      errorMessage = 'Access denied.';
+    } else {
+      reportPayload = await generateReportPayload(id, supabase, {
+        id: profile.id,
+        full_name: profile.full_name,
+        badge_number: profile.badge_number,
+        jurisdiction: profile.jurisdiction,
+      });
+    }
+  } catch (err) {
+    errorMessage = err instanceof Error ? err.message : 'Failed to generate report.';
+  }
 
   return (
     <AppShell
@@ -31,10 +78,14 @@ export default async function ReportViewPage({
               <Printer className="w-4 h-4" />
               <span>Print</span>
             </Button>
-            <Button size="sm" className="gap-1.5 font-semibold shadow-sm">
-              <Download className="w-4 h-4" />
-              <span>Download PDF</span>
-            </Button>
+            {reportPayload && (
+              <form action={`/api/inspections/${id}/report`} method="POST">
+                <Button type="submit" size="sm" className="gap-1.5 font-semibold shadow-sm">
+                  <Download className="w-4 h-4" />
+                  <span>Generate &amp; Download</span>
+                </Button>
+              </form>
+            )}
           </div>
         }
       >
@@ -46,68 +97,13 @@ export default async function ReportViewPage({
           ]}
         />
 
-        {/* PDF Document Preview Representation */}
-        <Card className="max-w-3xl mx-auto border shadow-sm bg-card">
-          <CardHeader className="border-b p-6 text-center space-y-2">
-            <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary mb-1">
-              <FileCheck className="w-6 h-6" />
-            </div>
-            <CardTitle className="text-lg sm:text-xl font-bold uppercase tracking-tight">
-              Certificate of Legal Metrology Inspection
-            </CardTitle>
-            <p className="text-xs text-muted-foreground font-mono">
-              Report Reference No: REP-2026-0891 • Inspection ID: {id}
-            </p>
-          </CardHeader>
-
-          <CardContent className="p-6 space-y-6 text-xs sm:text-sm">
-            {/* Meta Table */}
-            <div className="grid grid-cols-2 gap-4 border rounded-lg p-4 bg-muted/20 text-xs">
-              <div>
-                <span className="text-muted-foreground block text-[11px] uppercase">Officer Name</span>
-                <span className="font-semibold text-foreground">{profile.full_name}</span>
-              </div>
-              <div>
-                <span className="text-muted-foreground block text-[11px] uppercase">Jurisdiction</span>
-                <span className="font-semibold text-foreground">{profile.jurisdiction}</span>
-              </div>
-              <div>
-                <span className="text-muted-foreground block text-[11px] uppercase">Inspection Date</span>
-                <span className="font-semibold text-foreground">06 September 2026</span>
-              </div>
-              <div>
-                <span className="text-muted-foreground block text-[11px] uppercase">Overall Compliance</span>
-                <span className="inline-block mt-0.5">
-                  <StatusBadge status="PASS" />
-                </span>
-              </div>
-            </div>
-
-            {/* Product Summary */}
-            <div className="space-y-2">
-              <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground border-b pb-1">
-                Commodity Particulars
-              </h4>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                <div><strong>Brand Name:</strong> Sunrise Brand</div>
-                <div><strong>Product:</strong> Whole Wheat Biscuits</div>
-                <div><strong>Declared Net Quantity:</strong> 200 g</div>
-                <div><strong>Declared MRP:</strong> Rs. 50.00 (incl. of all taxes)</div>
-              </div>
-            </div>
-
-            {/* Cryptographic Proof Notice */}
-            <div className="rounded-md border p-3 bg-muted/40 text-[11px] text-muted-foreground space-y-1">
-              <div className="flex items-center gap-1.5 font-semibold text-foreground">
-                <ShieldCheck className="w-3.5 h-3.5 text-primary" />
-                <span>Tamper-Evident SHA-256 Verification</span>
-              </div>
-              <p className="font-mono break-all text-[10px]">
-                e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-              </p>
-            </div>
-          </CardContent>
-        </Card>
+        {errorMessage ? (
+          <div className="rounded-lg border border-compliance-fail-border bg-compliance-fail-bg p-4 text-sm text-compliance-fail-text">
+            {errorMessage}
+          </div>
+        ) : reportPayload ? (
+          <ReportView payload={reportPayload} />
+        ) : null}
 
         <div className="max-w-3xl mx-auto flex items-center justify-between pt-2">
           <Link href={`/scan/${id}/result`}>

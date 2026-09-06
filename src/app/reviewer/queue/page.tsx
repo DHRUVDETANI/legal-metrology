@@ -1,3 +1,10 @@
+// ============================================================================
+// src/app/reviewer/queue/page.tsx
+// SIH PS26034 — Reviewer Queue Page
+//
+// Fetches real inspections with status=REVIEW from the database.
+// ============================================================================
+
 import Link from 'next/link';
 import { AppShell } from '@/components/shell/app-shell';
 import { PageContainer } from '@/components/shell/page-container';
@@ -5,94 +12,100 @@ import { Breadcrumbs } from '@/components/shell/breadcrumbs';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { Button } from '@/components/ui/button';
-import { Filter, Search, ArrowRight } from 'lucide-react';
+import { Filter, ArrowRight } from 'lucide-react';
 import { requireReviewer } from '@/lib/auth/helpers';
-import type { InspectionStatus } from '@/types/database.types';
+import { createServerSupabaseClient } from '@/lib/supabase/server';
+import type { Inspection } from '@/types/database.types';
 
-interface QueueItem {
+interface QueueRow {
   id: string;
   inspectionNumber: string;
-  brand: string;
-  product: string;
-  inspectorName: string;
-  flagReason: string;
-  date: string;
-  status: InspectionStatus;
+  locationName: string;
+  inspectorId: string;
+  totalViolations: number;
+  rulesetVersion: string;
+  createdAt: string;
+  reviewerNotes: string | null;
+}
+
+function formatDate(iso: string) {
+  return new Date(iso).toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 export default async function ReviewerQueuePage() {
   const profile = await requireReviewer({ redirectTo: '/login' });
+  const supabase = await createServerSupabaseClient();
 
-  // Demonstration queue items for shell review
-  const queueData: QueueItem[] = [
-    {
-      id: 'demo-insp-003',
-      inspectionNumber: 'INSP-2026-0889',
-      brand: 'Himalayan Harvest',
-      product: 'Organic Green Tea (100g)',
-      inspectorName: 'Demo Inspector Ravi Kumar',
-      flagReason: 'Low OCR confidence on Consumer Care Contact',
-      date: '06 Sep 2026, 14:15',
-      status: 'REVIEW',
-    },
-    {
-      id: 'demo-insp-005',
-      inspectionNumber: 'INSP-2026-0887',
-      brand: 'AgroGold',
-      product: 'Basmati Rice (5kg)',
-      inspectorName: 'Demo Inspector Ravi Kumar',
-      flagReason: 'Character height boundary condition',
-      date: '06 Sep 2026, 12:40',
-      status: 'REVIEW',
-    },
-    {
-      id: 'demo-insp-006',
-      inspectionNumber: 'INSP-2026-0884',
-      brand: 'Shree Dairy',
-      product: 'Pure Ghee (1L Tin)',
-      inspectorName: 'Officer S. Patil',
-      flagReason: 'Ambiguous manufacturer address formatting',
-      date: '05 Sep 2026, 17:10',
-      status: 'REVIEW',
-    },
-  ];
+  // Fetch real inspections with REVIEW status (RLS allows reviewer/admin to see all)
+  const { data: inspections } = await (
+    supabase.from('inspections') as unknown as {
+      select: (cols: string) => {
+        eq: (col: string, val: string) => {
+          order: (col: string, opts: { ascending: boolean }) => Promise<{
+            data: Inspection[] | null;
+          }>;
+        };
+      };
+    }
+  )
+    .select('*')
+    .eq('status', 'REVIEW')
+    .order('created_at', { ascending: false });
 
-  const columns: Column<QueueItem>[] = [
+  const queueData: QueueRow[] = (inspections || []).map((insp) => ({
+    id: insp.id,
+    inspectionNumber: insp.inspection_number,
+    locationName: insp.location_name,
+    inspectorId: insp.inspector_id,
+    totalViolations: insp.total_violations,
+    rulesetVersion: insp.ruleset_version,
+    createdAt: insp.created_at,
+    reviewerNotes: insp.reviewer_notes,
+  }));
+
+  const columns: Column<QueueRow>[] = [
     {
       header: 'Inspection Ref',
       accessorKey: 'inspectionNumber',
       className: 'font-mono text-xs font-semibold',
     },
     {
-      header: 'Commodity',
-      cell: (item) => (
-        <div>
-          <div className="font-semibold text-foreground">{item.brand}</div>
-          <div className="text-xs text-muted-foreground">{item.product}</div>
-        </div>
-      ),
+      header: 'Location',
+      accessorKey: 'locationName',
+      className: 'text-xs',
     },
     {
-      header: 'Flag Reason',
+      header: 'Violations',
       cell: (item) => (
-        <span className="text-xs text-compliance-review-text font-medium bg-compliance-review-bg/50 px-2 py-0.5 rounded">
-          {item.flagReason}
+        <span
+          className={
+            item.totalViolations > 0
+              ? 'text-xs font-bold text-compliance-fail-text'
+              : 'text-xs text-muted-foreground'
+          }
+        >
+          {item.totalViolations}
         </span>
       ),
     },
     {
-      header: 'Inspector',
-      accessorKey: 'inspectorName',
-      className: 'text-xs text-muted-foreground',
-    },
-    {
       header: 'Submitted',
-      accessorKey: 'date',
-      className: 'text-xs text-muted-foreground',
+      cell: (item) => (
+        <span className="text-xs text-muted-foreground whitespace-nowrap">
+          {formatDate(item.createdAt)}
+        </span>
+      ),
     },
     {
       header: 'Status',
-      cell: (item) => <StatusBadge status={item.status} />,
+      cell: () => <StatusBadge status="REVIEW" />,
     },
     {
       header: 'Action',
@@ -118,12 +131,10 @@ export default async function ReviewerQueuePage() {
         title="Inspection Review Queue"
         description="Priority queue of field inspections requiring manual verification or statutory adjudication."
         actions={
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" className="gap-1 text-xs">
-              <Filter className="w-3.5 h-3.5" />
-              <span>Filter Flags</span>
-            </Button>
-          </div>
+          <Button variant="outline" size="sm" className="gap-1 text-xs">
+            <Filter className="w-3.5 h-3.5" />
+            <span>Filter</span>
+          </Button>
         }
       >
         <Breadcrumbs
@@ -133,23 +144,18 @@ export default async function ReviewerQueuePage() {
           ]}
         />
 
-        {/* Filter bar */}
-        <div className="relative">
-          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <input
-            type="search"
-            placeholder="Search queue by product, brand, flag reason, or inspection number..."
-            className="w-full pl-9 pr-4 py-2 text-xs rounded-md border bg-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        {queueData.length === 0 ? (
+          <div className="rounded-lg border bg-muted/20 p-8 text-center text-sm text-muted-foreground">
+            No inspections currently awaiting review. All cases have been adjudicated.
+          </div>
+        ) : (
+          <DataTable
+            columns={columns}
+            data={queueData}
+            keyExtractor={(item) => item.id}
+            emptyMessage="No pending inspections in the review queue."
           />
-        </div>
-
-        {/* Desktop Data Table & Mobile Responsive Representation */}
-        <DataTable
-          columns={columns}
-          data={queueData}
-          keyExtractor={(item) => item.id}
-          emptyMessage="No pending inspections in the review queue."
-        />
+        )}
       </PageContainer>
     </AppShell>
   );

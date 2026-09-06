@@ -1,13 +1,18 @@
-import Link from 'next/link';
+// ============================================================================
+// src/app/reviewer/audit/[id]/page.tsx
+// SIH PS26034 — Reviewer Audit Page (Server Component wrapper)
+//
+// Fetches real inspection, declarations, violations, and audit trail from DB.
+// Delegates interactive adjudication to AuditPageClient.
+// ============================================================================
+
 import { AppShell } from '@/components/shell/app-shell';
 import { PageContainer } from '@/components/shell/page-container';
 import { Breadcrumbs } from '@/components/shell/breadcrumbs';
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { StatusBadge } from '@/components/ui/status-badge';
-import { Badge } from '@/components/ui/badge';
-import { CheckCircle2, XCircle, FileText } from 'lucide-react';
+import { AuditPageClient } from './audit-client';
 import { requireReviewer } from '@/lib/auth/helpers';
+import { createServerSupabaseClient } from '@/lib/supabase/server';
+import type { Inspection, Declaration, Violation, AuditLog } from '@/types/database.types';
 
 export default async function ReviewerAuditPage({
   params,
@@ -17,6 +22,76 @@ export default async function ReviewerAuditPage({
   const profile = await requireReviewer({ redirectTo: '/login' });
   const { id } = await params;
 
+  const supabase = await createServerSupabaseClient();
+
+  // Fetch inspection
+  const { data: inspection } = await (
+    supabase.from('inspections') as unknown as {
+      select: (cols: string) => {
+        eq: (col: string, val: string) => {
+          single: () => Promise<{ data: Inspection | null }>;
+        };
+      };
+    }
+  )
+    .select('*')
+    .eq('id', id)
+    .single();
+
+  if (!inspection) {
+    return (
+      <AppShell userRole={profile.role} userName={profile.full_name} stationName={profile.jurisdiction}>
+        <PageContainer title="Inspection Audit" description="Audit case not found.">
+          <div className="rounded-lg border border-compliance-fail-border bg-compliance-fail-bg p-4 text-sm text-compliance-fail-text">
+            Inspection not found or you do not have access to this record.
+          </div>
+        </PageContainer>
+      </AppShell>
+    );
+  }
+
+  // Fetch declarations
+  const { data: declarations } = await (
+    supabase.from('declarations') as unknown as {
+      select: (cols: string) => {
+        eq: (col: string, val: string) => {
+          order: (col: string, opts: { ascending: boolean }) => Promise<{ data: Declaration[] | null }>;
+        };
+      };
+    }
+  )
+    .select('*')
+    .eq('inspection_id', id)
+    .order('created_at', { ascending: true });
+
+  // Fetch violations
+  const { data: violations } = await (
+    supabase.from('violations') as unknown as {
+      select: (cols: string) => {
+        eq: (col: string, val: string) => {
+          order: (col: string, opts: { ascending: boolean }) => Promise<{ data: Violation[] | null }>;
+        };
+      };
+    }
+  )
+    .select('*')
+    .eq('inspection_id', id)
+    .order('created_at', { ascending: true });
+
+  // Fetch audit trail (reviewer/admin only — already enforced by requireReviewer above)
+  const { data: auditLogs } = await (
+    supabase.from('audit_logs') as unknown as {
+      select: (cols: string) => {
+        eq: (col: string, val: string) => {
+          order: (col: string, opts: { ascending: boolean }) => Promise<{ data: AuditLog[] | null }>;
+        };
+      };
+    }
+  )
+    .select('*')
+    .eq('entity_id', id)
+    .order('created_at', { ascending: true });
+
   return (
     <AppShell
       userRole={profile.role}
@@ -25,116 +100,24 @@ export default async function ReviewerAuditPage({
     >
       <PageContainer
         title="Inspection Audit & Adjudication"
-        description={`Audit case file: ${id}. Reconstruct evidence, verify OCR findings, and log official verdict.`}
-        actions={
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" className="gap-1.5 text-compliance-pass-text border-compliance-pass-border">
-              <CheckCircle2 className="w-4 h-4" />
-              <span>Adjudicate: PASS</span>
-            </Button>
-            <Button variant="outline" size="sm" className="gap-1.5 text-compliance-fail-text border-compliance-fail-border">
-              <XCircle className="w-4 h-4" />
-              <span>Adjudicate: FAIL</span>
-            </Button>
-          </div>
-        }
+        description={`Audit case file: ${inspection.inspection_number}. Reconstruct evidence, verify OCR findings, and log official verdict.`}
       >
         <Breadcrumbs
           items={[
             { label: 'Reviewer Portal', href: '/reviewer' },
             { label: 'Review Queue', href: '/reviewer/queue' },
-            { label: `Audit Case: ${id}` },
+            { label: `Audit: ${inspection.inspection_number}` },
           ]}
         />
 
-        {/* Case Banner */}
-        <div className="rounded-xl border bg-card p-5 shadow-sm space-y-3">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-mono font-bold text-muted-foreground">INSP-2026-0889</span>
-                <StatusBadge status="REVIEW" />
-              </div>
-              <h2 className="text-lg font-bold text-foreground">
-                Himalayan Harvest — Organic Green Tea (100g)
-              </h2>
-            </div>
-            <div className="text-xs text-muted-foreground">
-              Flag: Low OCR confidence on Consumer Care Contact
-            </div>
-          </div>
-        </div>
-
-        {/* Side-by-side Evidence vs OCR Review */}
-        <div className="grid gap-4 grid-cols-1 lg:grid-cols-12">
-          <Card className="lg:col-span-6 border">
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center justify-between">
-                <span>Photographic Packaging Evidence</span>
-                <Badge variant="outline" className="text-[10px]">High-Res Bounding Box</Badge>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-4 pt-0">
-              <div className="aspect-[4/3] rounded-lg bg-muted/30 border border-dashed flex flex-col items-center justify-center text-center p-4 text-muted-foreground">
-                <FileText className="w-8 h-8 mb-2 opacity-50" />
-                <span className="text-xs font-semibold">Image Viewport (Pinch-to-Zoom Ready)</span>
-                <span className="text-[11px] text-muted-foreground mt-1">
-                  Box: [x: 120, y: 450, w: 600, h: 80]
-                </span>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="lg:col-span-6 border">
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center justify-between">
-                <span>Statutory Declaration Details</span>
-                <Badge variant="review" className="text-[10px]">Confidence: 58%</Badge>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-4 pt-0 space-y-3 text-xs">
-              <div className="rounded-md border p-3 bg-muted/20 space-y-1">
-                <span className="text-muted-foreground block text-[11px]">Extracted Text (OCR Raw):</span>
-                <span className="font-mono font-semibold text-foreground">
-                  customercare@himaIayan-harvest.in
-                </span>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[11px] font-medium text-muted-foreground block">
-                  Reviewer Correction / Annotation:
-                </label>
-                <input
-                  type="text"
-                  defaultValue="customercare@himalayan-harvest.in"
-                  className="w-full px-3 py-2 text-xs rounded-md border bg-background"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[11px] font-medium text-muted-foreground block">
-                  Official Adjudication Remarks:
-                </label>
-                <textarea
-                  rows={3}
-                  placeholder="Record reason for verdict confirmation or override..."
-                  className="w-full px-3 py-2 text-xs rounded-md border bg-background"
-                />
-              </div>
-
-              <div className="flex gap-2 pt-2">
-                <Button size="sm" className="flex-1 font-semibold">
-                  Save & Confirm Adjudication
-                </Button>
-                <Link href="/reviewer/queue">
-                  <Button variant="ghost" size="sm">
-                    Back
-                  </Button>
-                </Link>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+        <AuditPageClient
+          inspectionId={id}
+          inspection={inspection}
+          declarations={declarations || []}
+          violations={violations || []}
+          auditLogs={auditLogs || []}
+          reviewerName={profile.full_name}
+        />
       </PageContainer>
     </AppShell>
   );

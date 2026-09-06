@@ -1,3 +1,11 @@
+// ============================================================================
+// src/app/reviewer/page.tsx
+// SIH PS26034 — Reviewer Overview Page
+//
+// Fetches real counts from the database: pending REVIEW, total violations,
+// and priority queue items.
+// ============================================================================
+
 import Link from 'next/link';
 import { AppShell } from '@/components/shell/app-shell';
 import { PageContainer } from '@/components/shell/page-container';
@@ -5,11 +13,37 @@ import { Breadcrumbs } from '@/components/shell/breadcrumbs';
 import { StatCard } from '@/components/shell/stat-card';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { FileCheck2, AlertTriangle, CheckCircle2, ArrowRight, ShieldAlert } from 'lucide-react';
+import { StatusBadge } from '@/components/ui/status-badge';
+import { FileCheck2, AlertTriangle, ShieldAlert, ArrowRight } from 'lucide-react';
 import { requireReviewer } from '@/lib/auth/helpers';
+import { createServerSupabaseClient } from '@/lib/supabase/server';
+import type { Inspection } from '@/types/database.types';
 
 export default async function ReviewerOverviewPage() {
   const profile = await requireReviewer({ redirectTo: '/login' });
+  const supabase = await createServerSupabaseClient();
+
+  // Fetch all inspections to derive counts
+  const { data: allInspections } = await (
+    supabase.from('inspections') as unknown as {
+      select: (cols: string) => {
+        order: (col: string, opts: { ascending: boolean }) => Promise<{
+          data: Inspection[] | null;
+        }>;
+      };
+    }
+  )
+    .select('id, status, total_violations, inspection_number, location_name, created_at, reviewer_notes')
+    .order('created_at', { ascending: false });
+
+  const inspections = allInspections || [];
+
+  const pendingCount = inspections.filter((i) => i.status === 'REVIEW').length;
+  const totalViolations = inspections.reduce((sum, i) => sum + (i.total_violations || 0), 0);
+  const failCount = inspections.filter((i) => i.status === 'FAIL').length;
+
+  // Top 2 pending items for display
+  const topPending = inspections.filter((i) => i.status === 'REVIEW').slice(0, 2);
 
   return (
     <AppShell
@@ -24,111 +58,87 @@ export default async function ReviewerOverviewPage() {
           <Link href="/reviewer/queue">
             <Button size="default" className="gap-2 font-semibold shadow-sm">
               <FileCheck2 className="w-4 h-4" />
-              <span>Open Review Queue (14 Pending)</span>
+              <span>Open Review Queue ({pendingCount} Pending)</span>
             </Button>
           </Link>
         }
       >
         <Breadcrumbs items={[{ label: 'Reviewer Portal' }]} />
 
-        {/* High-Level Analytical KPI Metrics */}
-        <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
+        {/* KPI Metrics */}
+        <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
           <StatCard
             title="Pending Adjudication"
-            value="14"
+            value={String(pendingCount)}
             description="Flagged 'REVIEW' cases awaiting audit"
             icon={AlertTriangle}
-            trend={{ value: "+3 today", isPositive: false }}
           />
           <StatCard
-            title="Reviewed Today"
-            value="28"
-            description="Completed audit adjudications"
-            icon={CheckCircle2}
-            trend={{ value: "+12%", isPositive: true }}
-          />
-          <StatCard
-            title="Flagged Infractions"
-            value="42"
-            description="Confirmed statutory violations"
+            title="Confirmed Violations"
+            value={String(totalViolations)}
+            description="Total statutory violations across all inspections"
             icon={ShieldAlert}
           />
           <StatCard
-            title="Average Audit Time"
-            value="2.4m"
-            description="Time to resolution per case"
+            title="FAILed Inspections"
+            value={String(failCount)}
+            description="Inspections confirmed non-compliant"
             icon={FileCheck2}
           />
         </div>
 
-        {/* Priority Review Queue Section */}
+        {/* Priority Queue Section */}
         <div className="space-y-3 pt-2">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-              Immediate Attention: High Severity Flags
+              Priority Review — Pending Adjudication
             </h3>
             <Link href="/reviewer/queue" className="text-xs text-primary font-medium hover:underline">
               View All in Queue &rarr;
             </Link>
           </div>
 
-          <div className="grid gap-3 grid-cols-1 md:grid-cols-2">
-            <Card className="border">
-              <CardHeader className="p-4 pb-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-mono font-bold text-muted-foreground">INSP-2026-0889</span>
-                  <span className="text-[11px] font-bold bg-compliance-review-bg text-compliance-review-text px-2 py-0.5 rounded-full">
-                    REVIEW REQUIRED
-                  </span>
-                </div>
-                <CardTitle className="text-sm font-semibold mt-1">
-                  Himalayan Harvest — Organic Green Tea (100g)
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="p-4 pt-0 space-y-2 text-xs">
-                <p className="text-muted-foreground">
-                  OCR confidence below 60% on Consumer Care email string. Manual reviewer confirmation required.
-                </p>
-                <div className="flex items-center justify-between pt-2 border-t">
-                  <span className="text-muted-foreground">Inspector: R. Kumar (Station 4)</span>
-                  <Link href="/reviewer/audit/demo-insp-003">
-                    <Button size="sm" variant="outline" className="h-8 text-xs gap-1">
-                      <span>Audit Record</span>
-                      <ArrowRight className="w-3.5 h-3.5" />
-                    </Button>
-                  </Link>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card className="border">
-              <CardHeader className="p-4 pb-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-mono font-bold text-muted-foreground">INSP-2026-0887</span>
-                  <span className="text-[11px] font-bold bg-compliance-review-bg text-compliance-review-text px-2 py-0.5 rounded-full">
-                    REVIEW REQUIRED
-                  </span>
-                </div>
-                <CardTitle className="text-sm font-semibold mt-1">
-                  AgroGold — Basmati Rice (5kg Bag)
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="p-4 pt-0 space-y-2 text-xs">
-                <p className="text-muted-foreground">
-                  Estimated character height border threshold (2.95mm vs 3.0mm requirement). Geometry check flagged.
-                </p>
-                <div className="flex items-center justify-between pt-2 border-t">
-                  <span className="text-muted-foreground">Inspector: P. Verma (Station 2)</span>
-                  <Link href="/reviewer/audit/demo-insp-003">
-                    <Button size="sm" variant="outline" className="h-8 text-xs gap-1">
-                      <span>Audit Record</span>
-                      <ArrowRight className="w-3.5 h-3.5" />
-                    </Button>
-                  </Link>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
+          {topPending.length === 0 ? (
+            <div className="rounded-lg border bg-muted/20 p-6 text-center text-sm text-muted-foreground">
+              No inspections currently require review. All cases are adjudicated.
+            </div>
+          ) : (
+            <div className="grid gap-3 grid-cols-1 md:grid-cols-2">
+              {topPending.map((insp) => (
+                <Card key={insp.id} className="border">
+                  <CardHeader className="p-4 pb-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-mono font-bold text-muted-foreground">
+                        {insp.inspection_number}
+                      </span>
+                      <StatusBadge status={insp.status} />
+                    </div>
+                    <CardTitle className="text-sm font-semibold mt-1">
+                      {insp.location_name}
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="p-4 pt-0 space-y-2 text-xs">
+                    {insp.total_violations > 0 && (
+                      <p className="text-compliance-fail-text font-medium">
+                        {insp.total_violations} violation{insp.total_violations !== 1 ? 's' : ''} detected
+                      </p>
+                    )}
+                    <div className="flex items-center justify-between pt-2 border-t">
+                      <span className="text-muted-foreground">
+                        {new Date(insp.created_at).toLocaleDateString('en-IN')}
+                      </span>
+                      <Link href={`/reviewer/audit/${insp.id}`}>
+                        <Button size="sm" variant="outline" className="h-8 text-xs gap-1">
+                          <span>Audit Record</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </Button>
+                      </Link>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
         </div>
       </PageContainer>
     </AppShell>
