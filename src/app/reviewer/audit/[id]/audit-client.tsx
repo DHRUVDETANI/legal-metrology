@@ -17,6 +17,8 @@ import { StatusBadge } from '@/components/ui/status-badge';
 import { Badge } from '@/components/ui/badge';
 import { CheckCircle2, XCircle, ArrowLeft, Shield } from 'lucide-react';
 import type { Inspection, Declaration, Violation, AuditLog } from '@/types/database.types';
+import { generateInspectionAdvisory } from '@/lib/advisory/service';
+import { AiAdvisoryCard } from '@/components/compliance/ai-advisory-card';
 
 // ── Client Component (needs form interactivity) ─────────────────────────────
 
@@ -177,6 +179,53 @@ export function AuditPageClient({
               </CardContent>
             </Card>
           )}
+
+          {/* AI Rule Auditor Assistance */}
+          <AiAdvisoryCard
+            advisory={generateInspectionAdvisory(
+              inspectionId,
+              {
+                inspectionId,
+                overallStatus: inspection.status,
+                rulesetVersion: inspection.ruleset_version,
+                evaluatedAt: inspection.updated_at,
+                totalRulesEvaluated: 6,
+                passedCount: 6 - violations.length,
+                failedCount: violations.length,
+                reviewCount: inspection.status === 'REVIEW' ? 1 : 0,
+                notApplicableCount: 0,
+                totalViolations: violations.length,
+                checkResults: violations.map((v) => ({
+                  ruleCode: v.rule_code,
+                  ruleId: v.rule_id || '',
+                  ruleVersion: v.rule_version,
+                  targetField: v.rule_code,
+                  title: `Rule ${v.rule_code}`,
+                  verdict: 'FAIL' as const,
+                  observedValue: v.observed_value,
+                  expectedConstraint: v.expected_constraint,
+                  severity: v.severity,
+                  confidence: v.confidence,
+                  explanation: `Observed ${v.observed_value} fails requirement ${v.expected_constraint}`,
+                  evaluatedAt: v.created_at,
+                })),
+                violations: violations.map((v) => ({
+                  inspectionId,
+                  ruleCode: v.rule_code,
+                  ruleId: v.rule_id || '',
+                  ruleVersion: v.rule_version,
+                  observedValue: v.observed_value,
+                  expectedConstraint: v.expected_constraint,
+                  severity: v.severity,
+                  evidenceBbox: v.evidence_bbox as Record<string, unknown>,
+                  evidenceCropPath: v.evidence_crop_path,
+                  confidence: v.confidence,
+                  explanation: `Observed ${v.observed_value} fails requirement ${v.expected_constraint}`,
+                })),
+              },
+              declarations
+            )}
+          />
 
           {/* Audit Trail */}
           <Card className="border">

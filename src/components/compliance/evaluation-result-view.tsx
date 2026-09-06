@@ -25,6 +25,8 @@ import {
   ListChecks,
   Scan,
 } from 'lucide-react';
+import { generateInspectionAdvisory } from '@/lib/advisory/service';
+import { AiAdvisoryCard } from '@/components/compliance/ai-advisory-card';
 
 interface EvaluationResultViewProps {
   inspectionId: string;
@@ -190,6 +192,9 @@ export function EvaluationResultView({
           </CardContent>
         </Card>
       )}
+
+      {/* AI Rule Auditor Advisory Guidance Layer */}
+      <AiAdvisoryCard advisory={generateInspectionAdvisory(inspectionId, summary)} />
 
       {/* Rule-by-Rule Audit Breakdown */}
       <Card className="border shadow-sm">
