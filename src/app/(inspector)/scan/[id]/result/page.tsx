@@ -1,12 +1,21 @@
-import Link from 'next/link';
+// ============================================================================
+// src/app/(inspector)/scan/[id]/result/page.tsx
+// SIH PS26034 — Deterministic Compliance Verdict & Findings Page
+// ============================================================================
+
 import { AppShell } from '@/components/shell/app-shell';
 import { PageContainer } from '@/components/shell/page-container';
 import { Breadcrumbs } from '@/components/shell/breadcrumbs';
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { StatusBadge } from '@/components/ui/status-badge';
-import { FileText, ArrowRight, ShieldCheck, CheckCircle2, History } from 'lucide-react';
 import { requireInspector } from '@/lib/auth/helpers';
+import { createServerSupabaseClient } from '@/lib/supabase/server';
+import { getActiveRules, evaluateCompliance, type ComplianceSummary } from '@/lib/compliance';
+import { EvaluationResultView } from '@/components/compliance/evaluation-result-view';
+import type {
+  Inspection,
+  Product,
+  Declaration,
+  CvMeasurement,
+} from '@/types/database.types';
 
 export default async function ResultViewPage({
   params,
@@ -15,6 +24,176 @@ export default async function ResultViewPage({
 }) {
   const profile = await requireInspector({ redirectTo: '/login' });
   const { id } = await params;
+
+  const supabase = await createServerSupabaseClient();
+
+  let inspectionNumber = id;
+  let productName = 'Sunrise Brand — Whole Wheat Biscuits (200g)';
+  let summary: ComplianceSummary;
+
+  if (id && id !== 'demo-insp-001') {
+    // 1. Fetch real inspection details
+    const { data: inspection } = await (
+      supabase.from('inspections') as unknown as {
+        select: (cols: string) => {
+          eq: (col: string, val: string) => {
+            single: () => Promise<{
+              data: (Inspection & { products?: Product | null }) | null;
+            }>;
+          };
+        };
+      }
+    )
+      .select('*, products(*)')
+      .eq('id', id)
+      .single();
+
+    if (inspection) {
+      inspectionNumber = inspection.inspection_number;
+      if (inspection.products) {
+        productName = `${inspection.products.brand_name} — ${inspection.products.product_name}`;
+      }
+    }
+
+    // 2. Fetch declarations
+    const { data: declarationsData } = await (
+      supabase.from('declarations') as unknown as {
+        select: (cols: string) => {
+          eq: (col: string, val: string) => Promise<{
+            data: Declaration[] | null;
+          }>;
+        };
+      }
+    )
+      .select('*')
+      .eq('inspection_id', id);
+
+    const declarationsMap: Record<
+      string,
+      {
+        id?: string;
+        fieldName: string;
+        rawOcrText: string;
+        observedValue: string;
+        normalizedValue: Record<string, unknown>;
+        confidence: number;
+        bbox?: { x: number; y: number; width: number; height: number };
+      }
+    > = {};
+
+    if (declarationsData) {
+      for (const d of declarationsData) {
+        declarationsMap[d.field_name] = {
+          id: d.id,
+          fieldName: d.field_name,
+          rawOcrText: d.raw_ocr_text,
+          observedValue: d.observed_value,
+          normalizedValue: (d.normalized_value as Record<string, unknown>) || {},
+          confidence: d.confidence,
+          bbox: d.bbox as { x: number; y: number; width: number; height: number } | undefined,
+        };
+      }
+    }
+
+    // 3. Fetch CV measurements
+    const { data: cvData } = await (
+      supabase.from('cv_measurements') as unknown as {
+        select: (cols: string) => {
+          eq: (col: string, val: string) => Promise<{
+            data: CvMeasurement[] | null;
+          }>;
+        };
+      }
+    )
+      .select('*')
+      .eq('inspection_id', id);
+
+    const cvMap: Record<
+      string,
+      {
+        id?: string;
+        targetField: string;
+        characterHeightPx: number;
+        contrastRatio: number;
+        isCalibrated: boolean;
+        measurementMetadata?: Record<string, unknown>;
+      }
+    > = {};
+
+    if (cvData) {
+      for (const c of cvData) {
+        cvMap[c.target_field] = {
+          id: c.id,
+          targetField: c.target_field,
+          characterHeightPx: c.character_height_px,
+          contrastRatio: c.contrast_ratio,
+          isCalibrated: c.is_calibrated,
+          measurementMetadata: c.measurement_metadata as Record<string, unknown> | undefined,
+        };
+      }
+    }
+
+    // 4. Load rules and evaluate
+    const rulesetVersion = inspection?.ruleset_version || 'v2024.1';
+    const activeRules = await getActiveRules(supabase, rulesetVersion);
+
+    summary = evaluateCompliance(
+      {
+        inspectionId: id,
+        rulesetVersion,
+        declarations: declarationsMap,
+        cvMeasurements: cvMap,
+      },
+      activeRules
+    );
+  } else {
+    // Canonical fallback for demo inspection
+    const activeRules = await getActiveRules(undefined, 'v2024.1');
+    summary = evaluateCompliance(
+      {
+        inspectionId: id,
+        rulesetVersion: 'v2024.1',
+        declarations: {
+          mrp: {
+            fieldName: 'mrp',
+            rawOcrText: 'MRP Rs. 50.00 (inclusive of all taxes)',
+            observedValue: 'Rs. 50.00 (incl. of all taxes)',
+            normalizedValue: { amount: 50, currency: 'INR', taxes_included: true },
+            confidence: 0.98,
+          },
+          net_quantity: {
+            fieldName: 'net_quantity',
+            rawOcrText: 'Net Qty: 200 g',
+            observedValue: '200 g',
+            normalizedValue: { quantity: 200, unit: 'g' },
+            confidence: 0.97,
+          },
+          manufacturing_date: {
+            fieldName: 'manufacturing_date',
+            rawOcrText: 'Mfg Date: 08/2026',
+            observedValue: '08/2026',
+            normalizedValue: { month: 8, year: 2026 },
+            confidence: 0.95,
+          },
+          name_address_manufacturer: {
+            fieldName: 'name_address_manufacturer',
+            rawOcrText: 'Manufactured by: Sunrise Foods Pvt. Ltd., Plot 45, Pune 411028',
+            observedValue: 'Sunrise Foods Pvt. Ltd., Plot 45, Pune 411028',
+            normalizedValue: { name_and_address: 'Sunrise Foods Pvt. Ltd., Plot 45, Pune 411028' },
+            confidence: 0.92,
+          },
+          consumer_care: {
+            fieldName: 'consumer_care',
+            rawOcrText: 'Consumer Care: 1800 209 4455 / customercare@sunrisefoods.in',
+            observedValue: '1800 209 4455 / customercare@sunrisefoods.in',
+            normalizedValue: { email: 'customercare@sunrisefoods.in', phone: '1800 209 4455' },
+            confidence: 0.93,
+          },
+        },
+      },
+      activeRules
+    );
+  }
 
   return (
     <AppShell
@@ -25,136 +204,24 @@ export default async function ResultViewPage({
       <PageContainer
         title="Compliance Verdict & Findings"
         description="Deterministic Legal Metrology compliance evaluation record."
-        actions={
-          <div className="flex items-center gap-2">
-            <Link href={`/scan/${id}/report`}>
-              <Button variant="outline" className="gap-2 font-medium">
-                <FileText className="w-4 h-4" />
-                <span>View Legal Report</span>
-              </Button>
-            </Link>
-            <Link href="/scan/new">
-              <Button className="gap-2 font-semibold shadow-sm">
-                <span>New Inspection</span>
-                <ArrowRight className="w-4 h-4" />
-              </Button>
-            </Link>
-          </div>
-        }
       >
         <Breadcrumbs
           items={[
             { label: 'Field Inspections', href: '/scan' },
-            { label: 'Inspection', href: `/scan/${id}/result` },
+            { label: 'Inspection', href: `/scan/${id}/extract` },
             { label: 'Evaluation Result' },
           ]}
         />
 
-        {/* Primary Verdict Hero */}
-        <div className="rounded-xl border bg-card p-5 sm:p-6 shadow-sm space-y-3">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-mono font-bold text-muted-foreground">
-                  INSP-2026-0891
-                </span>
-                <StatusBadge status="PASS" />
-              </div>
-              <h2 className="text-lg sm:text-xl font-bold text-foreground">
-                Sunrise Brand — Whole Wheat Biscuits (200g)
-              </h2>
-              <p className="text-xs text-muted-foreground">
-                Evaluated under Legal Metrology (Packaged Commodities) Ruleset v2024.1
-              </p>
-            </div>
-
-            <div className="flex flex-col items-start sm:items-end gap-1">
-              <span className="text-xs text-muted-foreground">Infractions Count</span>
-              <span className="text-2xl font-black text-compliance-pass-text">0 Violations</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Evaluation Summary Cards */}
-        <div className="grid gap-4 grid-cols-1 md:grid-cols-2">
-          <Card className="border">
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-                <ShieldCheck className="w-4 h-4 text-primary" />
-                <span>Mandatory Declarations Verification</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-4 pt-0 space-y-2 text-xs">
-              <div className="flex items-center justify-between py-1.5 border-b">
-                <span className="text-muted-foreground">MRP Declaration</span>
-                <span className="font-semibold text-compliance-pass-text flex items-center gap-1">
-                  <CheckCircle2 className="w-3.5 h-3.5" /> Satisfied
-                </span>
-              </div>
-              <div className="flex items-center justify-between py-1.5 border-b">
-                <span className="text-muted-foreground">Standard SI Unit for Quantity</span>
-                <span className="font-semibold text-compliance-pass-text flex items-center gap-1">
-                  <CheckCircle2 className="w-3.5 h-3.5" /> Satisfied
-                </span>
-              </div>
-              <div className="flex items-center justify-between py-1.5 border-b">
-                <span className="text-muted-foreground">Manufacturing Month & Year</span>
-                <span className="font-semibold text-compliance-pass-text flex items-center gap-1">
-                  <CheckCircle2 className="w-3.5 h-3.5" /> Satisfied
-                </span>
-              </div>
-              <div className="flex items-center justify-between py-1.5">
-                <span className="text-muted-foreground">Manufacturer Identity & Address</span>
-                <span className="font-semibold text-compliance-pass-text flex items-center gap-1">
-                  <CheckCircle2 className="w-3.5 h-3.5" /> Satisfied
-                </span>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="border">
-            <CardHeader className="p-4 pb-2">
-              <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-                <FileText className="w-4 h-4 text-primary" />
-                <span>Inspection Chain of Custody</span>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="p-4 pt-0 space-y-2 text-xs">
-              <div className="flex items-center justify-between py-1.5 border-b">
-                <span className="text-muted-foreground">Field Inspector</span>
-                <span className="font-semibold text-foreground">{profile.full_name}</span>
-              </div>
-              <div className="flex items-center justify-between py-1.5 border-b">
-                <span className="text-muted-foreground">Inspector Badge Number</span>
-                <span className="font-mono font-medium text-foreground">{profile.badge_number || 'MH-INS-2024-001'}</span>
-              </div>
-              <div className="flex items-center justify-between py-1.5 border-b">
-                <span className="text-muted-foreground">Inspection Station / Jurisdiction</span>
-                <span className="font-medium text-foreground">{profile.jurisdiction}</span>
-              </div>
-              <div className="flex items-center justify-between py-1.5">
-                <span className="text-muted-foreground">Audit Trail Status</span>
-                <span className="font-medium text-foreground">Immutable Ledger Sealed</span>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Primary Next Action */}
-        <div className="flex flex-col sm:flex-row gap-3 pt-2">
-          <Link href={`/scan/${id}/report`} className="flex-1">
-            <Button size="lg" className="w-full gap-2 text-base font-bold shadow-md">
-              <FileText className="w-5 h-5" />
-              <span>Generate Legal Inspection Report (PDF)</span>
-            </Button>
-          </Link>
-          <Link href="/history" className="sm:w-auto">
-            <Button variant="outline" size="lg" className="w-full gap-2 font-medium">
-              <History className="w-5 h-5" />
-              <span>Inspection History</span>
-            </Button>
-          </Link>
-        </div>
+        <EvaluationResultView
+          inspectionId={id}
+          inspectionNumber={inspectionNumber}
+          productName={productName}
+          initialSummary={summary}
+          inspectorName={profile.full_name}
+          badgeNumber={profile.badge_number || 'MH-INS-2024-001'}
+          jurisdiction={profile.jurisdiction}
+        />
       </PageContainer>
     </AppShell>
   );

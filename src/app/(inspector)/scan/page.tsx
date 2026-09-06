@@ -6,46 +6,88 @@ import { MobileInspectionCard } from '@/components/shell/mobile-inspection-card'
 import { Button } from '@/components/ui/button';
 import { Camera, PlusCircle } from 'lucide-react';
 import { requireInspector } from '@/lib/auth/helpers';
+import { createServerSupabaseClient } from '@/lib/supabase/server';
+import type { Inspection } from '@/types/database.types';
 
 export default async function ScanPage() {
   const profile = await requireInspector({ redirectTo: '/login' });
+  const supabase = await createServerSupabaseClient();
 
-  // Explicitly isolated sample demonstration entries for UI shell display
-  const demoRecentInspections = [
-    {
-      id: 'demo-insp-001',
-      inspectionNumber: 'INSP-2026-0891',
-      brandName: 'Sunrise Brand',
-      productName: 'Whole Wheat Biscuits (200g)',
-      status: 'PASS' as const,
-      locationName: 'APMC Market, Yard 4',
-      date: 'Today, 14:30',
-      violationsCount: 0,
-      href: '/scan/demo-insp-001/result',
-    },
-    {
-      id: 'demo-insp-002',
-      inspectionNumber: 'INSP-2026-0890',
-      brandName: 'Kaveri Pure',
-      productName: 'Mustard Oil (1L Pet Bottle)',
-      status: 'FAIL' as const,
-      locationName: 'Retail Bazaar, Stall 12',
-      date: 'Today, 11:15',
-      violationsCount: 2,
-      href: '/scan/demo-insp-002/result',
-    },
-    {
-      id: 'demo-insp-003',
-      inspectionNumber: 'INSP-2026-0889',
-      brandName: 'Himalayan Harvest',
-      productName: 'Organic Green Tea (100g)',
-      status: 'REVIEW' as const,
-      locationName: 'Supermarket Central, Pune',
-      date: 'Yesterday, 16:45',
-      violationsCount: 1,
-      href: '/scan/demo-insp-003/result',
-    },
-  ];
+  // Fetch real inspections from the database for this inspector
+  const { data: realInspections } = (await (supabase.from('inspections') as unknown as {
+    select: (cols: string) => {
+      eq: (col: string, val: string) => {
+        order: (col: string, opts: { ascending: boolean }) => {
+          limit: (n: number) => Promise<{
+            data:
+              | (Inspection & {
+                  products?: { brand_name: string; product_name: string } | null;
+                })[]
+              | null;
+          }>;
+        };
+      };
+    };
+  })
+    .select('*, products(brand_name, product_name)')
+    .eq('inspector_id', profile.id)
+    .order('created_at', { ascending: false })
+    .limit(10));
+
+  // Formatted inspection cards list
+  const recentInspections =
+    realInspections && realInspections.length > 0
+      ? realInspections.map((insp) => ({
+          id: insp.id,
+          inspectionNumber: insp.inspection_number,
+          brandName: insp.products?.brand_name || 'Standard Commodity',
+          productName: insp.products?.product_name || 'Packaged Commodity',
+          status: insp.status as 'PASS' | 'FAIL' | 'REVIEW',
+          locationName: insp.location_name,
+          date: new Date(insp.created_at).toLocaleDateString('en-IN', {
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+          violationsCount: insp.total_violations,
+          href: `/scan/${insp.id}/extract`,
+        }))
+      : [
+          {
+            id: 'demo-insp-001',
+            inspectionNumber: 'INSP-2026-0891',
+            brandName: 'Sunrise Brand',
+            productName: 'Whole Wheat Biscuits (200g)',
+            status: 'PASS' as const,
+            locationName: 'APMC Market, Yard 4',
+            date: 'Today, 14:30',
+            violationsCount: 0,
+            href: '/scan/demo-insp-001/result',
+          },
+          {
+            id: 'demo-insp-002',
+            inspectionNumber: 'INSP-2026-0890',
+            brandName: 'Kaveri Pure',
+            productName: 'Mustard Oil (1L Pet Bottle)',
+            status: 'FAIL' as const,
+            locationName: 'Retail Bazaar, Stall 12',
+            date: 'Today, 11:15',
+            violationsCount: 2,
+            href: '/scan/demo-insp-002/result',
+          },
+          {
+            id: 'demo-insp-003',
+            inspectionNumber: 'INSP-2026-0889',
+            brandName: 'Himalayan Harvest',
+            productName: 'Organic Green Tea (100g)',
+            status: 'REVIEW' as const,
+            locationName: 'Supermarket Central, Pune',
+            date: 'Yesterday, 16:45',
+            violationsCount: 1,
+            href: '/scan/demo-insp-003/result',
+          },
+        ];
 
   return (
     <AppShell
@@ -103,7 +145,7 @@ export default async function ScanPage() {
           </div>
 
           <div className="grid gap-3 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
-            {demoRecentInspections.map((insp) => (
+            {recentInspections.map((insp) => (
               <MobileInspectionCard key={insp.id} {...insp} />
             ))}
           </div>
