@@ -1,9 +1,9 @@
 // ============================================================================
 // src/app/reviewer/page.tsx
-// SIH PS26034 — Reviewer Overview Page
+// SIH PS26034 — Reviewer Operational Dashboard
 //
-// Fetches real counts from the database: pending REVIEW, total violations,
-// and priority queue items.
+// Displays pending review queue, total violations count, severity distribution,
+// and priority adjudication queue items.
 // ============================================================================
 
 import Link from 'next/link';
@@ -14,36 +14,29 @@ import { StatCard } from '@/components/shell/stat-card';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { StatusBadge } from '@/components/ui/status-badge';
-import { FileCheck2, AlertTriangle, ShieldAlert, ArrowRight } from 'lucide-react';
+import { DistributionChart } from '@/components/dashboard/distribution-chart';
+import { FileCheck2, AlertTriangle, ShieldAlert, CheckCircle, ArrowRight } from 'lucide-react';
 import { requireReviewer } from '@/lib/auth/helpers';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
-import type { Inspection } from '@/types/database.types';
+import { getReviewerDashboardStats } from '@/lib/dashboard/service';
 
 export default async function ReviewerOverviewPage() {
   const profile = await requireReviewer({ redirectTo: '/login' });
   const supabase = await createServerSupabaseClient();
 
-  // Fetch all inspections to derive counts
-  const { data: allInspections } = await (
-    supabase.from('inspections') as unknown as {
-      select: (cols: string) => {
-        order: (col: string, opts: { ascending: boolean }) => Promise<{
-          data: Inspection[] | null;
-        }>;
-      };
-    }
-  )
-    .select('id, status, total_violations, inspection_number, location_name, created_at, reviewer_notes')
-    .order('created_at', { ascending: false });
+  const stats = await getReviewerDashboardStats(supabase);
 
-  const inspections = allInspections || [];
+  const severitySegments = [
+    { label: 'Critical', count: stats.severityDistribution.critical, colorClass: 'bg-rose-600' },
+    { label: 'Major', count: stats.severityDistribution.major, colorClass: 'bg-amber-500' },
+    { label: 'Minor', count: stats.severityDistribution.minor, colorClass: 'bg-slate-400' },
+  ];
 
-  const pendingCount = inspections.filter((i) => i.status === 'REVIEW').length;
-  const totalViolations = inspections.reduce((sum, i) => sum + (i.total_violations || 0), 0);
-  const failCount = inspections.filter((i) => i.status === 'FAIL').length;
-
-  // Top 2 pending items for display
-  const topPending = inspections.filter((i) => i.status === 'REVIEW').slice(0, 2);
+  const complianceSegments = [
+    { label: 'Verified (PASS)', count: stats.passCount, colorClass: 'bg-emerald-500' },
+    { label: 'Rejected (FAIL)', count: stats.failCount, colorClass: 'bg-rose-500' },
+    { label: 'Pending Review', count: stats.pendingReviewCount, colorClass: 'bg-amber-500' },
+  ];
 
   return (
     <AppShell
@@ -53,37 +46,60 @@ export default async function ReviewerOverviewPage() {
     >
       <PageContainer
         title="Reviewer Audit Directorate"
-        description="Audit flagged inspections, adjudicate ambiguous declarations, and verify evidence integrity."
+        description="Audit flagged inspections, adjudicate ambiguous declarations, and verify statutory evidence integrity."
         actions={
           <Link href="/reviewer/queue">
             <Button size="default" className="gap-2 font-semibold shadow-sm">
               <FileCheck2 className="w-4 h-4" />
-              <span>Open Review Queue ({pendingCount} Pending)</span>
+              <span>Review Queue ({stats.pendingReviewCount} Pending)</span>
             </Button>
           </Link>
         }
       >
         <Breadcrumbs items={[{ label: 'Reviewer Portal' }]} />
 
-        {/* KPI Metrics */}
-        <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+        {/* Real KPI Metrics */}
+        <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
           <StatCard
             title="Pending Adjudication"
-            value={String(pendingCount)}
+            value={stats.pendingReviewCount}
             description="Flagged 'REVIEW' cases awaiting audit"
             icon={AlertTriangle}
           />
           <StatCard
             title="Confirmed Violations"
-            value={String(totalViolations)}
-            description="Total statutory violations across all inspections"
+            value={stats.totalViolationsCount}
+            description="Total statutory violations across cases"
             icon={ShieldAlert}
           />
           <StatCard
-            title="FAILed Inspections"
-            value={String(failCount)}
+            title="Non-Compliant (FAIL)"
+            value={stats.failCount}
             description="Inspections confirmed non-compliant"
             icon={FileCheck2}
+          />
+          <StatCard
+            title="Compliant (PASS)"
+            value={stats.passCount}
+            description="Verified commodities"
+            icon={CheckCircle}
+          />
+        </div>
+
+        {/* Operational Visualizations */}
+        <div className="grid gap-4 grid-cols-1 md:grid-cols-2">
+          <DistributionChart
+            title="Inspection Status Breakdown"
+            description="Proportion of cases by current determination"
+            segments={complianceSegments}
+            total={stats.totalInspections}
+          />
+          <DistributionChart
+            title="Violation Severity Distribution"
+            description="Statutory gravity of detected non-compliances"
+            segments={severitySegments}
+            total={stats.severityDistribution.total}
+            emptyMessage="No statutory violations recorded across inspections."
           />
         </div>
 
@@ -94,42 +110,44 @@ export default async function ReviewerOverviewPage() {
               Priority Review — Pending Adjudication
             </h3>
             <Link href="/reviewer/queue" className="text-xs text-primary font-medium hover:underline">
-              View All in Queue &rarr;
+              View Complete Queue &rarr;
             </Link>
           </div>
 
-          {topPending.length === 0 ? (
+          {stats.priorityQueue.length === 0 ? (
             <div className="rounded-lg border bg-muted/20 p-6 text-center text-sm text-muted-foreground">
               No inspections currently require review. All cases are adjudicated.
             </div>
           ) : (
-            <div className="grid gap-3 grid-cols-1 md:grid-cols-2">
-              {topPending.map((insp) => (
+            <div className="grid gap-3 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
+              {stats.priorityQueue.map((insp) => (
                 <Card key={insp.id} className="border">
                   <CardHeader className="p-4 pb-2">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-mono font-bold text-muted-foreground">
-                        {insp.inspection_number}
+                        {insp.inspectionNumber}
                       </span>
                       <StatusBadge status={insp.status} />
                     </div>
                     <CardTitle className="text-sm font-semibold mt-1">
-                      {insp.location_name}
+                      {insp.locationName}
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="p-4 pt-0 space-y-2 text-xs">
-                    {insp.total_violations > 0 && (
+                    {insp.totalViolations > 0 ? (
                       <p className="text-compliance-fail-text font-medium">
-                        {insp.total_violations} violation{insp.total_violations !== 1 ? 's' : ''} detected
+                        {insp.totalViolations} violation{insp.totalViolations !== 1 ? 's' : ''} detected
                       </p>
+                    ) : (
+                      <p className="text-muted-foreground">Flagged for OCR or CV verification</p>
                     )}
                     <div className="flex items-center justify-between pt-2 border-t">
                       <span className="text-muted-foreground">
-                        {new Date(insp.created_at).toLocaleDateString('en-IN')}
+                        {new Date(insp.createdAt).toLocaleDateString('en-IN')}
                       </span>
                       <Link href={`/reviewer/audit/${insp.id}`}>
                         <Button size="sm" variant="outline" className="h-8 text-xs gap-1">
-                          <span>Audit Record</span>
+                          <span>Audit Case</span>
                           <ArrowRight className="w-3.5 h-3.5" />
                         </Button>
                       </Link>

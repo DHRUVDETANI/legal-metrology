@@ -1,89 +1,100 @@
+// ============================================================================
+// src/app/admin/rules/page.tsx
+// SIH PS26034 — Regulatory Rules Configuration (Safe Read-Only View)
+//
+// Displays the 6 canonical statutory rules preserved from the Supabase DB schema.
+// Enforces that existing rules and rule_versions remain immutable.
+// ============================================================================
+
 import { AppShell } from '@/components/shell/app-shell';
 import { PageContainer } from '@/components/shell/page-container';
 import { Breadcrumbs } from '@/components/shell/breadcrumbs';
 import { DataTable, type Column } from '@/components/ui/data-table';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Plus, CheckCircle2 } from 'lucide-react';
+import { CheckCircle2, ShieldAlert } from 'lucide-react';
 import { requireAdmin } from '@/lib/auth/helpers';
+import { createServerSupabaseClient } from '@/lib/supabase/server';
+import { PRESERVED_DEMO_RULES } from '@/lib/compliance/registry';
 import type { SeverityLevel } from '@/types/database.types';
 
 interface RuleItem {
   ruleCode: string;
   title: string;
+  description: string;
   targetField: string;
   severity: SeverityLevel;
   enabled: boolean;
   version: string;
+  operator: string;
 }
 
 export default async function AdminRulesPage() {
   const profile = await requireAdmin({ redirectTo: '/login' });
+  const supabase = await createServerSupabaseClient();
 
-  // Actual 6 master rules preserved from Supabase DB schema
-  const preservedRules: RuleItem[] = [
-    {
-      ruleCode: 'DEMO-LM-CONSUMER-CARE-001',
-      title: '[DEMO] Consumer Care Contact Required',
-      targetField: 'consumer_care',
-      severity: 'MAJOR',
-      enabled: true,
-      version: 'v2024.1',
-    },
-    {
-      ruleCode: 'DEMO-LM-FONT-HEIGHT-001',
-      title: '[DEMO] Minimum Font Height Requirement',
-      targetField: 'font_height',
-      severity: 'MAJOR',
-      enabled: true,
-      version: 'v2024.1',
-    },
-    {
-      ruleCode: 'DEMO-LM-MANUFACTURER-001',
-      title: '[DEMO] Manufacturer Information Required',
-      targetField: 'manufacturer',
-      severity: 'CRITICAL',
-      enabled: true,
-      version: 'v2024.1',
-    },
-    {
-      ruleCode: 'DEMO-LM-MFG-DATE-001',
-      title: '[DEMO] Manufacturing Date Required',
-      targetField: 'mfg_date',
-      severity: 'MAJOR',
-      enabled: true,
-      version: 'v2024.1',
-    },
-    {
-      ruleCode: 'DEMO-LM-MRP-001',
-      title: '[DEMO] MRP Mandatory Declaration',
-      targetField: 'mrp',
-      severity: 'CRITICAL',
-      enabled: true,
-      version: 'v2024.1',
-    },
-    {
-      ruleCode: 'DEMO-LM-NET-QTY-001',
-      title: '[DEMO] Net Quantity with SI Unit',
-      targetField: 'net_quantity',
-      severity: 'CRITICAL',
-      enabled: true,
-      version: 'v2024.1',
-    },
-  ];
+  // Query database for rules, falling back gracefully to canonical PRESERVED_DEMO_RULES
+  const { data: dbRules } = await (
+    supabase.from('rules') as unknown as {
+      select: (cols: string) => {
+        order: (col: string, opts: { ascending: boolean }) => Promise<{
+          data:
+            | {
+                id: string;
+                rule_code: string;
+                title: string;
+                description: string;
+                target_field: string;
+                severity: SeverityLevel;
+                enabled: boolean;
+                current_version: string;
+                condition_operator: string;
+              }[]
+            | null;
+        }>;
+      };
+    }
+  )
+    .select('*')
+    .order('rule_code', { ascending: true });
+
+  const rules: RuleItem[] =
+    dbRules && dbRules.length > 0
+      ? dbRules.map((r) => ({
+          ruleCode: r.rule_code,
+          title: r.title,
+          description: r.description,
+          targetField: r.target_field,
+          severity: r.severity,
+          enabled: r.enabled,
+          version: r.current_version,
+          operator: r.condition_operator,
+        }))
+      : PRESERVED_DEMO_RULES.map((r) => ({
+          ruleCode: r.ruleCode,
+          title: r.title,
+          description: r.description,
+          targetField: r.targetField,
+          severity: r.severity,
+          enabled: r.enabled,
+          version: r.currentVersion,
+          operator: r.conditionOperator,
+        }));
 
   const columns: Column<RuleItem>[] = [
     {
       header: 'Rule Code',
       accessorKey: 'ruleCode',
-      className: 'font-mono text-xs font-bold text-foreground',
+      className: 'font-mono text-xs font-bold text-foreground whitespace-nowrap',
     },
     {
-      header: 'Title / Description',
+      header: 'Statutory Rule & Description',
       cell: (item) => (
-        <div>
+        <div className="space-y-0.5 max-w-md">
           <div className="font-semibold text-foreground text-xs sm:text-sm">{item.title}</div>
-          <div className="text-[11px] text-muted-foreground font-mono">Target: {item.targetField}</div>
+          <div className="text-[11px] text-muted-foreground line-clamp-2">{item.description}</div>
+          <div className="text-[10px] text-muted-foreground font-mono pt-0.5">
+            Field: <span className="text-foreground font-medium">{item.targetField}</span> · Logic: <span className="text-foreground font-medium">{item.operator}</span>
+          </div>
         </div>
       ),
     },
@@ -99,27 +110,18 @@ export default async function AdminRulesPage() {
       ),
     },
     {
-      header: 'Version',
+      header: 'Ruleset Version',
       accessorKey: 'version',
-      className: 'font-mono text-xs text-muted-foreground',
+      className: 'font-mono text-xs text-muted-foreground whitespace-nowrap',
     },
     {
       header: 'Status',
-      cell: () => (
+      cell: (item) => (
         <span className="inline-flex items-center gap-1 text-xs font-semibold text-compliance-pass-text">
           <CheckCircle2 className="w-3.5 h-3.5" />
-          Active
+          {item.enabled ? 'Active' : 'Disabled'}
         </span>
       ),
-    },
-    {
-      header: 'Action',
-      cell: () => (
-        <Button size="sm" variant="ghost" className="h-8 text-xs">
-          Edit Rule
-        </Button>
-      ),
-      className: 'text-right',
     },
   ];
 
@@ -130,14 +132,8 @@ export default async function AdminRulesPage() {
       stationName={profile.jurisdiction}
     >
       <PageContainer
-        title="Regulatory Rules Configuration"
-        description="Master Legal Metrology statutory rulesets. Versioned and enforced by the deterministic compliance engine."
-        actions={
-          <Button size="sm" className="gap-1.5 font-semibold shadow-sm">
-            <Plus className="w-4 h-4" />
-            <span>Create New Rule</span>
-          </Button>
-        }
+        title="Regulatory Rules Registry"
+        description="Master Legal Metrology statutory rulesets. Versioned and evaluated deterministically by the compliance engine."
       >
         <Breadcrumbs
           items={[
@@ -146,13 +142,22 @@ export default async function AdminRulesPage() {
           ]}
         />
 
-        <div className="rounded-lg border bg-muted/20 p-3 text-xs text-muted-foreground">
-          <strong>Deterministic Compliance Authority:</strong> Rule configurations govern automated PASS/FAIL decisions directly. All modifications are logged to the immutable audit trail.
+        {/* Legal Metrology Demarcation Banner */}
+        <div className="rounded-lg border border-amber-300/40 bg-amber-50/50 dark:bg-amber-950/20 p-4 text-xs space-y-1.5 text-amber-900 dark:text-amber-200">
+          <div className="flex items-center gap-2 font-semibold">
+            <ShieldAlert className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+            <span>Statutory Verification Notice [DEMO / TEST RULES]</span>
+          </div>
+          <p>
+            The 6 rules below represent structural demo rules modeled on the Legal Metrology (Packaged Commodities) Rules, 2011.
+            In compliance with project safety protocols, canonical rules are immutable during standard inspection sessions.
+            All PASS/FAIL verdicts are evaluated deterministically without LLM discretion.
+          </p>
         </div>
 
         <DataTable
           columns={columns}
-          data={preservedRules}
+          data={rules}
           keyExtractor={(item) => item.ruleCode}
         />
       </PageContainer>

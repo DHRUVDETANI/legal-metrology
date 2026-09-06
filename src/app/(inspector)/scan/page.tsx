@@ -1,93 +1,36 @@
+// ============================================================================
+// src/app/(inspector)/scan/page.tsx
+// SIH PS26034 — Inspector Field Terminal & Dashboard
+//
+// Displays real-time metrics, status breakdowns, and recent inspections
+// for the authenticated field officer.
+// ============================================================================
+
 import Link from 'next/link';
 import { AppShell } from '@/components/shell/app-shell';
 import { PageContainer } from '@/components/shell/page-container';
 import { Breadcrumbs } from '@/components/shell/breadcrumbs';
+import { StatCard } from '@/components/shell/stat-card';
 import { MobileInspectionCard } from '@/components/shell/mobile-inspection-card';
+import { DistributionChart } from '@/components/dashboard/distribution-chart';
 import { Button } from '@/components/ui/button';
-import { Camera, PlusCircle } from 'lucide-react';
+import { Camera, PlusCircle, CheckCircle, AlertTriangle, XCircle, ShieldCheck } from 'lucide-react';
 import { requireInspector } from '@/lib/auth/helpers';
 import { createServerSupabaseClient } from '@/lib/supabase/server';
-import type { Inspection } from '@/types/database.types';
+import { getInspectorDashboardStats } from '@/lib/dashboard/service';
 
 export default async function ScanPage() {
   const profile = await requireInspector({ redirectTo: '/login' });
   const supabase = await createServerSupabaseClient();
 
-  // Fetch real inspections from the database for this inspector
-  const { data: realInspections } = (await (supabase.from('inspections') as unknown as {
-    select: (cols: string) => {
-      eq: (col: string, val: string) => {
-        order: (col: string, opts: { ascending: boolean }) => {
-          limit: (n: number) => Promise<{
-            data:
-              | (Inspection & {
-                  products?: { brand_name: string; product_name: string } | null;
-                })[]
-              | null;
-          }>;
-        };
-      };
-    };
-  })
-    .select('*, products(brand_name, product_name)')
-    .eq('inspector_id', profile.id)
-    .order('created_at', { ascending: false })
-    .limit(10));
+  // Fetch real statistics scoped strictly to this inspector
+  const stats = await getInspectorDashboardStats(supabase, profile.id);
 
-  // Formatted inspection cards list
-  const recentInspections =
-    realInspections && realInspections.length > 0
-      ? realInspections.map((insp) => ({
-          id: insp.id,
-          inspectionNumber: insp.inspection_number,
-          brandName: insp.products?.brand_name || 'Standard Commodity',
-          productName: insp.products?.product_name || 'Packaged Commodity',
-          status: insp.status as 'PASS' | 'FAIL' | 'REVIEW',
-          locationName: insp.location_name,
-          date: new Date(insp.created_at).toLocaleDateString('en-IN', {
-            month: 'short',
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit',
-          }),
-          violationsCount: insp.total_violations,
-          href: `/scan/${insp.id}/extract`,
-        }))
-      : [
-          {
-            id: 'demo-insp-001',
-            inspectionNumber: 'INSP-2026-0891',
-            brandName: 'Sunrise Brand',
-            productName: 'Whole Wheat Biscuits (200g)',
-            status: 'PASS' as const,
-            locationName: 'APMC Market, Yard 4',
-            date: 'Today, 14:30',
-            violationsCount: 0,
-            href: '/scan/demo-insp-001/result',
-          },
-          {
-            id: 'demo-insp-002',
-            inspectionNumber: 'INSP-2026-0890',
-            brandName: 'Kaveri Pure',
-            productName: 'Mustard Oil (1L Pet Bottle)',
-            status: 'FAIL' as const,
-            locationName: 'Retail Bazaar, Stall 12',
-            date: 'Today, 11:15',
-            violationsCount: 2,
-            href: '/scan/demo-insp-002/result',
-          },
-          {
-            id: 'demo-insp-003',
-            inspectionNumber: 'INSP-2026-0889',
-            brandName: 'Himalayan Harvest',
-            productName: 'Organic Green Tea (100g)',
-            status: 'REVIEW' as const,
-            locationName: 'Supermarket Central, Pune',
-            date: 'Yesterday, 16:45',
-            violationsCount: 1,
-            href: '/scan/demo-insp-003/result',
-          },
-        ];
+  const complianceSegments = [
+    { label: 'Compliant (PASS)', count: stats.statusBreakdown.pass, colorClass: 'bg-emerald-500' },
+    { label: 'Violations (FAIL)', count: stats.statusBreakdown.fail, colorClass: 'bg-rose-500' },
+    { label: 'Under Review', count: stats.statusBreakdown.review, colorClass: 'bg-amber-500' },
+  ];
 
   return (
     <AppShell
@@ -107,7 +50,7 @@ export default async function ScanPage() {
           </Link>
         }
       >
-        <Breadcrumbs items={[{ label: 'Field Inspections' }]} />
+        <Breadcrumbs items={[{ label: 'Field Terminal & Dashboard' }]} />
 
         {/* Primary Field Capture Banner (Mobile-Optimized) */}
         <div className="rounded-xl border bg-card p-5 shadow-sm space-y-4">
@@ -133,6 +76,44 @@ export default async function ScanPage() {
           </Link>
         </div>
 
+        {/* Real Inspector Metrics */}
+        <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
+          <StatCard
+            title="Total Inspections"
+            value={stats.totalInspections}
+            description="Conducted by your terminal"
+            icon={ShieldCheck}
+          />
+          <StatCard
+            title="Compliant (PASS)"
+            value={stats.statusBreakdown.pass}
+            description="Verified statutory declarations"
+            icon={CheckCircle}
+          />
+          <StatCard
+            title="Under Review"
+            value={stats.statusBreakdown.review}
+            description="Flagged for manual audit"
+            icon={AlertTriangle}
+          />
+          <StatCard
+            title="Violations (FAIL)"
+            value={stats.statusBreakdown.fail}
+            description={`${stats.totalViolations} total rule breaches`}
+            icon={XCircle}
+          />
+        </div>
+
+        {/* Accessible Distribution Chart */}
+        {stats.totalInspections > 0 && (
+          <DistributionChart
+            title="Inspection Outcome Distribution"
+            description="Your terminal's statutory compliance breakdown"
+            segments={complianceSegments}
+            total={stats.totalInspections}
+          />
+        )}
+
         {/* Recent Inspections List */}
         <div className="space-y-3 pt-2">
           <div className="flex items-center justify-between">
@@ -140,15 +121,37 @@ export default async function ScanPage() {
               Recent Field Inspections
             </h3>
             <span className="text-xs text-muted-foreground font-mono">
-              Station: {profile.jurisdiction}
+              Officer: {profile.badge_number || profile.full_name}
             </span>
           </div>
 
-          <div className="grid gap-3 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
-            {recentInspections.map((insp) => (
-              <MobileInspectionCard key={insp.id} {...insp} />
-            ))}
-          </div>
+          {stats.recentInspections.length === 0 ? (
+            <div className="rounded-lg border bg-muted/20 p-8 text-center text-sm text-muted-foreground">
+              No inspections recorded yet. Start your first inspection using the button above.
+            </div>
+          ) : (
+            <div className="grid gap-3 grid-cols-1 md:grid-cols-2 lg:grid-cols-3">
+              {stats.recentInspections.map((insp) => (
+                <MobileInspectionCard
+                  key={insp.id}
+                  id={insp.id}
+                  inspectionNumber={insp.inspectionNumber}
+                  brandName={insp.brandName}
+                  productName={insp.productName}
+                  status={insp.status}
+                  locationName={insp.locationName}
+                  date={new Date(insp.createdAt).toLocaleDateString('en-IN', {
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                  violationsCount={insp.totalViolations}
+                  href={`/scan/${insp.id}/extract`}
+                />
+              ))}
+            </div>
+          )}
         </div>
       </PageContainer>
     </AppShell>
